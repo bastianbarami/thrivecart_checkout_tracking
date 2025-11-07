@@ -1,125 +1,119 @@
 // api/capi.js
-// Minimaler CAPI-Endpunkt für Meta (Browser & Server nutzbar)
-// Vercel Node 18, ESM nicht nötig; fetch ist global verfügbar
+/**
+ * Minimaler, robuster Relay-Endpunkt zu Meta CAPI
+ * - GET  /api/capi?ping=1 -> 200 ok (Health-Check)
+ * - OPTIONS -> CORS Preflight
+ * - POST /api/capi -> leitet Events an Meta weiter
+ *
+ * Erwartetes Body-Format (Browser/Thrivecart -> Relay):
+ *  - ENTWEDER: { events: [ {... Meta Event ...} ] }
+ *  - ODER:     { event:  {... Meta Event ...} }   (wird zu events:[] gewrappt)
+ *
+ * ENV-Variablen (in Vercel → Settings → Environment Variables):
+ *  - META_PIXEL_ID        (z.B. 1337997101285196)
+ *  - META_ACCESS_TOKEN    (Dein langer Access Token)
+ *  - META_TEST_EVENT_CODE (optional, z.B. TEST53810)
+ *  - CORS_ALLOW_ORIGIN    (Komma-getrennte Origins, ohne Leerzeichen!)
+ */
 
-const PIXEL_ID = process.env.META_PIXEL_ID;
-const ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
-const TEST_EVENT_CODE = process.env.META_TEST_EVENT_CODE || "";
-const CORS = (process.env.CORS_ALLOW_ORIGIN || "")
+const ALLOWED_ORIGINS = (process.env.CORS_ALLOW_ORIGIN || "")
   .split(",")
   .map(s => s.trim())
   .filter(Boolean);
 
-// Helper: E-Mail → SHA256
-const crypto = require("node:crypto");
-function hashEmail(email) {
-  if (!email) return undefined;
-  const norm = String(email).trim().toLowerCase();
-  if (!norm) return undefined;
-  return crypto.createHash("sha256").update(norm).digest("hex");
+const META_PIXEL_ID     = process.env.META_PIXEL_ID;
+const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
+const META_TEST_EVENT_CODE = process.env.META_TEST_EVENT_CODE || "";
+
+function setCors(res, origin) {
+  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS,GET");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
-// CORS: erlaubte Origins; no-origin (Server→Server) erlauben
-function corsHeaders(req) {
+function bad(res, code, msg) {
+  res.statusCode = code;
+  res.setHeader("Content-Type", "application/json");
+  res.end(JSON.stringify({ ok: false, error: msg }));
+}
+
+export default async function handler(req, res) {
   const origin = req.headers.origin || "";
-  const allow = CORS.includes(origin) ? origin : "";
-  return {
-    "Access-Control-Allow-Origin": allow || "",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Vary": "Origin",
-  };
-}
+  setCors(res, origin);
 
-module.exports = async (req, res) => {
-  // Preflight
+  // Health / Ping
+  if (req.method === "GET") {
+    if (req.query && ("ping" in req.query)) {
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ ok: true, ping: "pong" }));
+      return;
+    }
+    bad(res, 405, "Use POST for events");
+    return;
+  }
+
+  // CORS preflight
   if (req.method === "OPTIONS") {
-    res.set(corsHeaders(req));
-    return res.status(204).end();
+    res.statusCode = 204;
+    res.end();
+    return;
   }
 
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Use POST" });
+    bad(res, 405, "Method not allowed");
+    return;
   }
 
-  // Origin prüfen (Browser). Fehlt der Origin (Server→Server), erlauben wir es.
-  const origin = req.headers.origin || "";
-  if (origin && !CORS.includes(origin)) {
-    res.set(corsHeaders(req));
-    return res.status(403).json({ error: "Origin not allowed" });
+  if (!META_PIXEL_ID || !META_ACCESS_TOKEN) {
+    bad(res, 500, "Server missing META env vars");
+    return;
   }
 
-  // Payload lesen
+  // Body einlesen
   let body = {};
   try {
-    body = req.body || {};
-    if (typeof body === "string") body = JSON.parse(body);
+    body = typeof req.body === "object" ? req.body : JSON.parse(req.body || "{}");
   } catch (e) {
-    return res.status(400).json({ error: "Invalid JSON" });
+    bad(res, 400, "Invalid JSON body");
+    return;
   }
 
-  // Erwartete Felder (alles optional bis auf event_name)
-  const {
-    event_name,
-    event_time,              // optional; sonst jetzt
-    event_source_url,        // z.B. window.location.href
-    action_source = "website",
-    email,                   // unverschlüsselt → wird gehasht
-    value,                   // z.B. 499
-    currency = "EUR",
-    custom_data = {},        // frei erweiterbar (content_name etc.)
-    test_event_code,         // optional überschreiben
-  } = body;
-
-  if (!event_name) {
-    return res.status(400).json({ error: "Missing event_name" });
+  // Flexibles Input-Format -> Immer zu { events: [...] } normalisieren
+  let events = [];
+  if (Array.isArray(body.events)) {
+    events = body.events;
+  } else if (body.event && typeof body.event === "object") {
+    events = [body.event];
+  } else {
+    bad(res, 400, "Missing 'events' array or 'event' object");
+    return;
   }
 
-  // User-Daten aufbereiten
-  const user_data = {
-    em: email ? [hashEmail(email)] : undefined,
-    client_ip_address: req.headers["x-forwarded-for"] || req.socket?.remoteAddress || undefined,
-    client_user_agent: req.headers["user-agent"] || undefined,
-  };
-
-  // Custom-Data
-  const cd = {
-    value: value != null ? Number(value) : undefined,
-    currency,
-    ...custom_data,
-  };
-
-  // Meta-Events-Array
-  const data = [{
-    event_name,
-    event_time: Number(event_time) || Math.floor(Date.now() / 1000),
-    action_source,
-    event_source_url,
-    user_data,
-    custom_data: cd,
-  }];
-
-  const url = `https://graph.facebook.com/v18.0/${PIXEL_ID}/events?access_token=${ACCESS_TOKEN}`;
+  // Test-Event optional automatisch ergänzen (nur wenn gefordert)
+  const forcingTest = (req.query && req.query.test === "1") || (req.headers["x-meta-test"] === "1");
   const payload = {
-    data,
-    test_event_code: test_event_code || TEST_EVENT_CODE || undefined,
+    data: events,
+    test_event_code: forcingTest && META_TEST_EVENT_CODE ? META_TEST_EVENT_CODE : undefined
   };
 
   try {
-    const fbRes = await fetch(url, {
+    const graphUrl = `https://graph.facebook.com/v18.0/${META_PIXEL_ID}/events?access_token=${encodeURIComponent(META_ACCESS_TOKEN)}`;
+
+    const resp = await fetch(graphUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(payload)
     });
 
-    const fbJson = await fbRes.json();
-    res.set(corsHeaders(req));
-
-    if (!fbRes.ok) {
-      return res.status(fbRes.status).json({ error: "facebook_error", details: fbJson });
-    }
-    return res.status(200).json({ ok: true, fb: fbJson });
-  } catch (e) {
-    return res.status(500).json({ error: "request_failed", details: String(e?.message || e) });
+    const out = await resp.json();
+    res.statusCode = resp.ok ? 200 : 400;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ ok: resp.ok, meta: out }));
+  } catch (err) {
+    bad(res, 500, String(err && err.message || err));
   }
-};
+}
