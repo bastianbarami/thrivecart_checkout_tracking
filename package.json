@@ -2,9 +2,5 @@
   "name": "thrivecart_checkout_tracking",
   "version": "1.0.0",
   "private": true,
-  "type": "module",
-  "license": "MIT",
-  "dependencies": {
-    "undici": "^6.19.8"
-  }
+  "engines": { "node": "18.x" }
 }
