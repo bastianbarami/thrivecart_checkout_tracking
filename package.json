@@ -1,6 +1,10 @@
 {
-  "name": "aibe-tracking",
-  "private": true,
+  "name": "thrivecart_checkout_tracking",
   "version": "1.0.0",
-  "type": "module"
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "dependencies": {
+    "undici": "^6.19.8"
+  }
 }
