@@ -1,2 +1,3 @@
-# thrivecart_checkout_tracking
-Meta Pixel Thrivecart Checkout incl. Tracking
+# AIBE Tracking Relay (Vercel)
+- /api/capi: Relay zu Meta CAPI
+- /api/thrivecart: ThriveCart → CAPI Mapping
