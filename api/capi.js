@@ -1,15 +1,19 @@
-// api/capi.js
 /**
- * Minimaler Relay-Endpunkt zu Meta CAPI
- * - GET  /api/capi?ping=1  -> 200 ok (Health)
- * - OPTIONS                -> 204 (CORS Preflight)
- * - POST /api/capi         -> sendet Events an Meta
+ * Minimaler, robuster Relay-Endpunkt zu Meta Conversions API (CAPI)
+ * ---------------------------------------------------------------
+ * - GET  /api/capi?ping=1     → Health Check ("pong")
+ * - OPTIONS                   → CORS Preflight
+ * - POST /api/capi            → Event-Weiterleitung an Meta
  *
- * ENV (Vercel → Settings → Environment Variables):
- *  - META_PIXEL_ID
- *  - META_ACCESS_TOKEN
- *  - META_TEST_EVENT_CODE      (optional)
- *  - CORS_ALLOW_ORIGIN         (komma-getrennt, OHNE Leerzeichen)
+ * Erwartetes Format (vom Browser / Thrivecart / Make Webhook):
+ *   - { "event":  { ... } }
+ *   - { "events": [ ... ] }
+ *
+ * ENV Variablen (in Vercel → Settings → Environment Variables):
+ *   META_PIXEL_ID        = 1337997101285196
+ *   META_ACCESS_TOKEN    = (dein Access Token)
+ *   META_TEST_EVENT_CODE = TEST53810
+ *   CORS_ALLOW_ORIGIN    = https://checkout.bastianbarami.com
  */
 
 const ALLOWED_ORIGINS = (process.env.CORS_ALLOW_ORIGIN || "")
@@ -21,6 +25,8 @@ const META_PIXEL_ID        = process.env.META_PIXEL_ID;
 const META_ACCESS_TOKEN    = process.env.META_ACCESS_TOKEN;
 const META_TEST_EVENT_CODE = process.env.META_TEST_EVENT_CODE || "";
 
+/* --------------------- Hilfsfunktionen --------------------- */
+
 function setCors(res, origin) {
   if (origin && ALLOWED_ORIGINS.includes(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
@@ -30,73 +36,108 @@ function setCors(res, origin) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
-function sendJson(res, code, obj) {
+function bad(res, code, msg) {
   res.statusCode = code;
   res.setHeader("Content-Type", "application/json");
-  res.end(JSON.stringify(obj));
+  res.end(JSON.stringify({ ok: false, error: msg }));
 }
 
-module.exports = async function handler(req, res) {
+/* --------------------- Haupt-Handler --------------------- */
+
+export default async function handler(req, res) {
   const origin = req.headers.origin || "";
   setCors(res, origin);
 
-  // Health
+  // GET → Health Check
   if (req.method === "GET") {
     if (req.query && ("ping" in req.query)) {
-      return sendJson(res, 200, { ok: true, ping: "pong" });
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ ok: true, ping: "pong" }));
+      return;
     }
-    return sendJson(res, 405, { ok: false, error: "Use POST for events" });
+    bad(res, 405, "Use POST for events");
+    return;
   }
 
-  // CORS Preflight
+  // OPTIONS → Preflight
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
-    return res.end();
+    res.end();
+    return;
   }
 
+  // Nur POST erlaubt
   if (req.method !== "POST") {
-    return sendJson(res, 405, { ok: false, error: "Method not allowed" });
+    bad(res, 405, "Method not allowed");
+    return;
   }
 
   if (!META_PIXEL_ID || !META_ACCESS_TOKEN) {
-    return sendJson(res, 500, { ok: false, error: "Server missing META env vars" });
+    bad(res, 500, "Server missing META environment variables");
+    return;
   }
 
-  // Body normalisieren
+  /* --------------------- Body einlesen --------------------- */
+
   let body = {};
   try {
     body = typeof req.body === "object" ? req.body : JSON.parse(req.body || "{}");
   } catch {
-    return sendJson(res, 400, { ok: false, error: "Invalid JSON body" });
+    bad(res, 400, "Invalid JSON body");
+    return;
   }
 
+  // Einheitliches Format sicherstellen
   let events = [];
   if (Array.isArray(body.events)) {
     events = body.events;
   } else if (body.event && typeof body.event === "object") {
     events = [body.event];
   } else {
-    return sendJson(res, 400, { ok: false, error: "Missing 'events' array or 'event' object" });
+    bad(res, 400, "Missing 'events' array or 'event' object");
+    return;
   }
 
-  const forcingTest = (req.query && req.query.test === "1") || (req.headers["x-meta-test"] === "1");
+  /* --------------------- NEU: Automatisches Matching --------------------- */
+  // (Meta verlangt mindestens IP & User-Agent für Zuordnung)
+  const forwarded = (req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  const ip = forwarded || req.socket?.remoteAddress || "";
+  const ua = req.headers["user-agent"] || "";
+
+  events = events.map(e => ({
+    ...e,
+    client_ip_address: e.client_ip_address || ip || undefined,
+    client_user_agent: e.client_user_agent || ua || undefined,
+  }));
+
+  /* --------------------- Testmodus --------------------- */
+  const forcingTest =
+    (req.query && req.query.test === "1") || req.headers["x-meta-test"] === "1";
+
   const payload = {
     data: events,
-    ...(forcingTest && META_TEST_EVENT_CODE ? { test_event_code: META_TEST_EVENT_CODE } : {})
+    test_event_code:
+      forcingTest && META_TEST_EVENT_CODE ? META_TEST_EVENT_CODE : undefined,
   };
 
+  /* --------------------- Meta-Request --------------------- */
   try {
-    const url = `https://graph.facebook.com/v18.0/${META_PIXEL_ID}/events?access_token=${encodeURIComponent(META_ACCESS_TOKEN)}`;
+    const graphUrl = `https://graph.facebook.com/v18.0/${META_PIXEL_ID}/events?access_token=${encodeURIComponent(
+      META_ACCESS_TOKEN
+    )}`;
 
-    const resp = await fetch(url, {
+    const resp = await fetch(graphUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
     });
 
-    const out = await resp.json().catch(() => ({}));
-    return sendJson(res, resp.ok ? 200 : 400, { ok: resp.ok, meta: out });
+    const out = await resp.json();
+    res.statusCode = resp.ok ? 200 : 400;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ ok: resp.ok, meta: out }));
   } catch (err) {
-    return sendJson(res, 500, { ok: false, error: String(err && err.message || err) });
+    bad(res, 500, String(err?.message || err));
   }
-};
+}
