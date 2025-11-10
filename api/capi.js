@@ -24,6 +24,9 @@ const META_PIXEL_ID        = process.env.META_PIXEL_ID;
 const META_ACCESS_TOKEN    = process.env.META_ACCESS_TOKEN;
 const META_TEST_EVENT_CODE = process.env.META_TEST_EVENT_CODE || "";
 
+// ✂️ Blockliste für Event-Namen, die NICHT mehr an Meta weitergeleitet werden sollen
+const BLOCKED_EVENTS = new Set(["VideoProgress", "VideoSummary"]);
+
 function setCors(res, origin) {
   if (origin && ALLOWED_ORIGINS.includes(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
@@ -89,18 +92,14 @@ module.exports = async function handler(req, res) {
 
   events = events.map(ev => {
     const e = { ...ev };
-    // vorhandene user_data respektieren, sonst Objekt anlegen
     const ud = { ...(e.user_data || {}) };
 
-    // Falls fälschlich auf Top-Level übergeben, nach user_data verschieben
     if (e.client_ip_address && !ud.client_ip_address) ud.client_ip_address = e.client_ip_address;
     if (e.client_user_agent && !ud.client_user_agent) ud.client_user_agent = e.client_user_agent;
 
-    // Serverseitig aus Headern ergänzen (wenn nicht gesetzt)
     if (!ud.client_ip_address && ip) ud.client_ip_address = ip;
     if (!ud.client_user_agent && ua) ud.client_user_agent = ua;
 
-    // Aufräumen top-level
     delete e.client_ip_address;
     delete e.client_user_agent;
 
@@ -108,6 +107,22 @@ module.exports = async function handler(req, res) {
     return e;
   });
   // -------------------------------------------------------------
+
+  // 🚫 Blockiere unerwünschte Events (VideoProgress, VideoSummary)
+  const beforeCount = events.length;
+  events = events.filter(e => !BLOCKED_EVENTS.has(e?.event_name));
+  const blockedCount = beforeCount - events.length;
+
+  if (blockedCount > 0) {
+    // Optionales Loggen – in Vercel → Logs sichtbar
+    console.log(`[CAPI Relay] skipped ${blockedCount} blocked event(s)`);
+  }
+
+  // Wenn nach dem Filtern nichts übrig ist → bewusst nichts weiterleiten
+  if (events.length === 0) {
+    res.statusCode = 204; // No Content
+    return res.end();
+  }
 
   // Test-Modus unterstützen
   const forcingTest = (req.query && req.query.test === "1") || req.headers["x-meta-test"] === "1";
