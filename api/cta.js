@@ -1,7 +1,17 @@
 // /api/cta.js
 export default async function handler(req, res) {
-  // --- CORS: allow your Webflow domain(s) to call this endpoint ---
-  res.setHeader("Access-Control-Allow-Origin", "https://www.ai-business-engine.com");
+  // Allowlist of origins (add more if needed)
+  const ALLOWED = new Set([
+    "https://www.ai-business-engine.com",
+    "https://ai-business-engine.com"
+  ]);
+
+  const origin = req.headers.origin || "";
+  if (ALLOWED.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+
+  res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
@@ -10,8 +20,6 @@ export default async function handler(req, res) {
 
   try {
     const payload = req.body || {};
-
-    // --- Forward to Make server-to-server (no browser CORS issues) ---
     const MAKE_WEBHOOK = process.env.MAKE_WEBHOOK_URL;
 
     if (!MAKE_WEBHOOK) {
@@ -25,7 +33,7 @@ export default async function handler(req, res) {
     });
 
     return res.status(200).json({ ok: true, forwarded: r.ok });
-  } catch (e) {
+  } catch (_) {
     return res.status(500).json({ ok: false });
   }
 }
