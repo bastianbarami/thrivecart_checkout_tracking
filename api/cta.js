@@ -20,11 +20,15 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ ok: false });
 
   try {
-    const payload = req.body || {};
     const MAKE_WEBHOOK = process.env.MAKE_WEBHOOK_URL;
-
     if (!MAKE_WEBHOOK) {
       return res.status(500).json({ ok: false, error: "MAKE_WEBHOOK_URL missing" });
+    }
+
+    // Normalize payload (if body arrives as a JSON string, parse it)
+    let payload = req.body || {};
+    if (typeof payload === "string") {
+      try { payload = JSON.parse(payload); } catch (_) {}
     }
 
     const r = await fetch(MAKE_WEBHOOK, {
@@ -34,7 +38,7 @@ export default async function handler(req, res) {
     });
 
     return res.status(200).json({ ok: true, forwarded: r.ok });
-  } catch (_) {
-    return res.status(500).json({ ok: false });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 }
