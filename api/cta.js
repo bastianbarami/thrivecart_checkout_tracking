@@ -4,6 +4,7 @@ export default async function handler(req, res) {
   const ALLOWED = new Set([
     "https://www.ai-business-engine.com",
     "https://ai-business-engine.com"
+    "https://checkout.ai-business-engine.com"
   ]);
 
   const origin = req.headers.origin || "";
