@@ -3,7 +3,7 @@ export default async function handler(req, res) {
   // Allowlist of origins (add more if needed)
   const ALLOWED = new Set([
     "https://www.ai-business-engine.com",
-    "https://ai-business-engine.com"
+    "https://ai-business-engine.com",
     "https://checkout.ai-business-engine.com"
   ]);
 
