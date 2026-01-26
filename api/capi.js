@@ -158,11 +158,21 @@ module.exports = async function handler(req, res) {
     (req.query && req.query.test === "1") ||
     req.headers["x-meta-test"] === "1";
 
+  // ✅ Adjustment only:
+  // Allow per-request test_event_code passthrough (if the client sends it),
+  // otherwise fall back to the env-driven META_TEST_EVENT_CODE behavior.
+  const requestTestCode =
+    (body && typeof body.test_event_code === "string" && body.test_event_code.trim() !== "")
+      ? body.test_event_code.trim()
+      : "";
+
   const payload = {
     data: events,
-    ...(forcingTest && META_TEST_EVENT_CODE
-      ? { test_event_code: META_TEST_EVENT_CODE }
-      : {})
+    ...(requestTestCode
+      ? { test_event_code: requestTestCode }
+      : (forcingTest && META_TEST_EVENT_CODE
+          ? { test_event_code: META_TEST_EVENT_CODE }
+          : {}))
   };
 
   // --- Relay to Meta ---
