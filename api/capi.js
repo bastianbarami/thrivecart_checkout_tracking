@@ -107,6 +107,17 @@ module.exports = async function handler(req, res) {
   const ip = forwarded || req.socket?.remoteAddress || "";
   const ua = req.headers["user-agent"] || "";
 
+  // --- [TEMP DEBUG] IP header inspection — REMOVE after diagnosis ---
+  console.log("[IP DEBUG]", JSON.stringify({
+    xff: req.headers["x-forwarded-for"] || null,
+    xri: req.headers["x-real-ip"] || null,
+    xvff: req.headers["x-vercel-forwarded-for"] || null,
+    xvip: req.headers["x-vercel-ip"] || null,
+    cfip: req.headers["cf-connecting-ip"] || null,
+    socket: req.socket?.remoteAddress || null,
+    resolved: ip
+  }));
+
   events = events.map(ev => {
     const e = { ...ev };
     const ud = { ...(e.user_data || {}) };
